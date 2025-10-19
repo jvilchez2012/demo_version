@@ -1,0 +1,9 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: demo_version:local
+    ports:
+      - "4000:4000"
+    restart: unless-stopped

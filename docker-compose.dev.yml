@@ -1,0 +1,9 @@
+services:
+  app:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: sh -c "npm ci || npm install && npm run build && SERVE_BUILD=true PORT=4000 node server/server.local.js"
+    ports:
+      - "4000:4000"

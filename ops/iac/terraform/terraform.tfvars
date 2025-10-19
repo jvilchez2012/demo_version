@@ -1,0 +1,5 @@
+region        = "us-east-1"
+instance_type = "t3.micro"
+name          = "demo-version-app"
+image_repo    = "jvilchez2012/demo_version"
+image_tag     = "latest"
