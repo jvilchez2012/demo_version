@@ -21,3 +21,7 @@ output "s3_bucket_name" {
 output "s3_bucket_arn" {
   value = aws_s3_bucket.artifacts.arn
 }
+
+output "dashboard_name" {
+  value = aws_cloudwatch_dashboard.app.dashboard_name
+}

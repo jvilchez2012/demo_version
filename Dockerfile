@@ -16,6 +16,10 @@ RUN npm ci || npm install
 
 # Bring in the rest and build the frontend
 COPY . .
+ARG BUILD_SHA=dev
+ARG BUILD_TIME=unknown
+ENV REACT_APP_BUILD_SHA=$BUILD_SHA
+ENV REACT_APP_BUILD_TIME=$BUILD_TIME
 RUN npm run build
 
 # Prune dev deps HERE 

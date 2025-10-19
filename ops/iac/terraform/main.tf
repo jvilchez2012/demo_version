@@ -37,6 +37,14 @@ resource "aws_security_group" "app" {
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.ssh_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -88,6 +96,7 @@ resource "aws_instance" "app" {
   subnet_id              = data.aws_subnets.default.ids[0]
   vpc_security_group_ids = [aws_security_group.app.id]
   iam_instance_profile   = aws_iam_instance_profile.ssm.name
+  key_name               = var.key_name
 
   root_block_device {
     volume_type           = "gp3"
@@ -138,6 +147,11 @@ resource "aws_iam_role" "lambda_exec" {
 resource "aws_iam_role_policy_attachment" "lambda_logs" {
   role       = aws_iam_role.lambda_exec.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "cwagent_server" {
+  role       = aws_iam_role.ssm.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
 
 # The Lambda function itself
@@ -211,5 +225,41 @@ resource "aws_iam_role_policy" "ec2_s3_write" {
       Action   = ["s3:PutObject"],
       Resource = "${aws_s3_bucket.artifacts.arn}/logs/*"
     }]
+  })
+}
+
+resource "aws_cloudwatch_dashboard" "app" {
+  dashboard_name = "${var.name}-dashboard"
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        "type" : "metric",
+        "x" : 0, "y" : 0, "width" : 12, "height" : 6,
+        "properties" : {
+          "title" : "EC2 CPUUtilization",
+          "metrics" : [
+            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.app.id, { "stat" : "Average" }]
+          ],
+          "region" : var.region,
+          "period" : 60,
+          "stacked" : false,
+          "view" : "timeSeries"
+        }
+      },
+      {
+        "type" : "metric",
+        "x" : 12, "y" : 0, "width" : 12, "height" : 6,
+        "properties" : {
+          "title" : "App memory (Prometheus → CWAgent)",
+          "metrics" : [
+            ["CWAgent", "process_resident_memory_bytes", "job", "node-app", "InstanceId", aws_instance.app.id, { "stat" : "Average" }]
+          ],
+          "region" : var.region,
+          "period" : 60,
+          "view" : "timeSeries",
+          "yAxis" : { "left" : { "label" : "bytes" } }
+        }
+      }
+    ]
   })
 }

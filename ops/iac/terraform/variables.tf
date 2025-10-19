@@ -27,3 +27,14 @@ variable "s3_bucket_prefix" {
   type    = string
   default = "demo-version-app-artifacts"
 }
+
+variable "key_name" {
+  type        = string
+  description = "Name of an existing EC2 key pair to attach (e.g., 'pem')"
+}
+
+variable "ssh_cidr" {
+  type        = string
+  description = "CIDR allowed to SSH (port 22). Use your public IP in CIDR form."
+  default     = "0.0.0.0/0"
+}

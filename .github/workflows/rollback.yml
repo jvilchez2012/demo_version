@@ -1,0 +1,58 @@
+name: Rollback
+on:
+  workflow_dispatch:
+    inputs:
+      to_sha:
+        description: "Commit SHA to roll back to (optional; uses previous.json if empty)"
+        required: false
+        default: ""
+
+env:
+  APP_NAME: demo-version-app
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Resolve target tag
+        id: target
+        run: |
+          if [ -n "${{ github.event.inputs.to_sha }}" ]; then
+            TAG="sha-${{ github.event.inputs.to_sha }}"
+          else
+            aws s3 cp s3://${{ secrets.S3_RELEASE_BUCKET }}/releases/previous.json prev.json
+            TAG=$(jq -r '.image' prev.json | awk -F: '{print $2}')
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Get EC2 Instance ID
+        id: ec2
+        run: |
+          IID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${{ env.APP_NAME }}" \
+            --query "Reservations[0].Instances[0].InstanceId" \
+            --output text)
+          echo "iid=$IID" >> $GITHUB_OUTPUT
+
+      - name: Redeploy via SSM
+        run: |
+          aws ssm send-command \
+            --instance-ids "${{ steps.ec2.outputs.iid }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters commands='[
+              "docker rm -f demo-version-app || true",
+              "docker pull '"${{ secrets.DOCKERHUB_USERNAME }}"'/demo_version:'"${{ steps.target.outputs.tag }}"'",
+              "docker run -d --name demo-version-app -e NODE_ENV=production -e SERVE_BUILD=true -e PORT=4000 -p 80:4000 --restart unless-stopped '"${{ secrets.DOCKERHUB_USERNAME }}"'/demo_version:'"${{ steps.target.outputs.tag }}"'"
+            ]'
