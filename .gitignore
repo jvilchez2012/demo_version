@@ -24,3 +24,16 @@ dist-ssr
 *.sw?
 
 build/
+
+
+ops/iac/terraform/.terraform/
+ops/iac/terraform/*.tfstate
+ops/iac/terraform/*.tfstate.*
+ops/iac/terraform/terraform.tfvars
+ops/iac/terraform/*.auto.tfvars
+ops/iac/terraform/lambda/hello.zip
+
+
+ops/iac/terraform/crash.log
+ops/iac/terraform/crash.*.log
+
