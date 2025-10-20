@@ -1,103 +1,171 @@
-name: Deploy
+name: CI/CD - demo_version
+
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch: {}
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: demo-version-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read  
 
 env:
+  AWS_REGION: us-east-1
   APP_NAME: demo-version-app
+  EC2_TAG_NAME: demo-version-app
+  DOCKERHUB_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/demo_version
 
 jobs:
-  deploy:
+  manifest:
+    name: Compute image tag
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+      sha_short: ${{ steps.meta.outputs.sha_short }}
     steps:
       - uses: actions/checkout@v4
+      - id: meta
+        shell: bash
+        run: |
+          SHA_SHORT="${GITHUB_SHA::12}"
+          echo "sha_short=$SHA_SHORT" >> "$GITHUB_OUTPUT"
+          echo "image_tag=sha-$SHA_SHORT" >> "$GITHUB_OUTPUT"
+          echo "Computed tag: sha-$SHA_SHORT"
 
-      - name: Docker login
+  build_push:
+    name: Build & Push
+    runs-on: ubuntu-latest
+    needs: manifest
+    outputs:
+      image_tag: ${{ needs.manifest.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build & push (latest + sha tag)
-        id: buildpush
+      - name: Build & push image
         uses: docker/build-push-action@v6
         with:
-            context: .
-            push: true
-            tags: |
-              ${{ secrets.DOCKERHUB_USERNAME }}/demo_version:latest
-              ${{ secrets.DOCKERHUB_USERNAME }}/demo_version:sha-${{ github.sha }}
-            build-args: |
-              BUILD_SHA=${{ github.sha }}
-              BUILD_TIME=${{ github.event.head_commit.timestamp }}
-            provenance: false
+          context: .
+          push: true
+          tags: |
+            ${{ env.DOCKERHUB_REPO }}:${{ needs.manifest.outputs.image_tag }}
+            ${{ env.DOCKERHUB_REPO }}:latest
+          cache-from: type=registry,ref=${{ env.DOCKERHUB_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKERHUB_REPO }}:buildcache,mode=max
 
+      - name: Save version.json (artifact)
+        shell: bash
+        run: |
+          printf '{"version":"%s","commit":"%s","date":"%s"}\n' \
+            "${{ needs.manifest.outputs.image_tag }}" "$GITHUB_SHA" "$(date -u +%FT%TZ)" > version.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: version
+          path: version.json
 
+  deploy:
+    name: Deploy via SSM (by tag)
+    runs-on: ubuntu-latest
+    needs: [build_push]
+    steps:
+      - uses: actions/checkout@v4
 
-
-      - name: Configure AWS
+      - name: Configure AWS (static keys)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ secrets.AWS_REGION }}
+          aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Get EC2 Instance
-        id: ec2
+      - name: Send SSM Command
+        env:
+          IMAGE: ${{ env.DOCKERHUB_REPO }}:${{ needs.build_push.outputs.image_tag }}
+        shell: bash
         run: |
-          IID=$(aws ec2 describe-instances \
-            --filters "Name=tag:Name,Values=${{ env.APP_NAME }}" \
-            --query "Reservations[0].Instances[0].InstanceId" \
-            --output text)
-          IP=$(aws ec2 describe-instances --instance-ids "$IID" \
-            --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
-          echo "iid=$IID" >> $GITHUB_OUTPUT
-          echo "ip=$IP"  >> $GITHUB_OUTPUT
+          set -euo pipefail
 
-      - name: Prepare release manifest
-        id: manifest
-        run: |
-          TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          SHORT=${GITHUB_SHA::7}
-          SHA_TAG="sha-${GITHUB_SHA}"
-          cat > manifest.json <<JSON
-          { "app":"${{ env.APP_NAME }}",
-            "image":"${{ secrets.DOCKERHUB_USERNAME }}/demo_version:${SHA_TAG}",
-            "git":{"sha":"${GITHUB_SHA}","short":"${SHORT}","run_url":"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"},
-            "deployed_at":"${TS}",
-            "instance_id":"${{ steps.ec2.outputs.iid }}",
-            "public_ip":"${{ steps.ec2.outputs.ip }}" }
+          # build a clean JSON payload to avoid quoting issues
+          cat > ssm.json <<'JSON'
+          {
+            "DocumentName": "AWS-RunShellScript",
+            "Targets": [{ "Key": "tag:Name", "Values": ["__TAG__"] }],
+            "Parameters": {
+              "commands": [
+                "docker rm -f __APP__ || true",
+                "docker pull __IMAGE__",
+                "docker run -d --name __APP__ -e NODE_ENV=production -e SERVE_BUILD=true -e PORT=4000 -p 80:4000 --restart unless-stopped __IMAGE__",
+                "docker ps"
+              ]
+            },
+            "TimeoutSeconds": 600,
+            "MaxConcurrency": "50",
+            "MaxErrors": "0"
+          }
           JSON
-          cat manifest.json
-          echo "sha_tag=$SHA_TAG" >> $GITHUB_OUTPUT
-          echo "date=$(date -u +%F)" >> $GITHUB_OUTPUT
 
-      - name: Save manifest to S3 (current + dated + previous)
+          sed -i "s|__TAG__|${{ env.EC2_TAG_NAME }}|g" ssm.json
+          sed -i "s|__APP__|${{ env.APP_NAME }}|g" ssm.json
+          sed -i "s|__IMAGE__|${IMAGE}|g" ssm.json
+
+          CMD_ID=$(aws ssm send-command --cli-input-json file://ssm.json --query 'Command.CommandId' --output text)
+          echo "CommandId=$CMD_ID"
+
+  verify:
+    name: Post-deploy health check
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    steps:
+      - name: Configure AWS (static keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ env.AWS_REGION }}
+
+      - name: Resolve public IP
+        id: ec2
+        shell: bash
         run: |
-          aws s3 cp s3://${{ secrets.S3_RELEASE_BUCKET }}/releases/current.json previous.json || echo '{}' > previous.json
-          aws s3 cp previous.json s3://${{ secrets.S3_RELEASE_BUCKET }}/releases/previous.json
-          aws s3 cp manifest.json s3://${{ secrets.S3_RELEASE_BUCKET }}/releases/current.json
-          aws s3 cp manifest.json s3://${{ secrets.S3_RELEASE_BUCKET }}/releases/${{ steps.manifest.outputs.date }}/${{ github.sha }}.json
-          aws s3 ls s3://${{ secrets.S3_RELEASE_BUCKET }}/releases/
+          IP=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=${{ env.EC2_TAG_NAME }}" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --region "${{ env.AWS_REGION }}" --output text)
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "Public IP: $IP"
 
-      - name: Deploy via SSM (pull sha tag and restart)
-        run: |
-          aws ssm send-command \
-            --instance-ids "${{ steps.ec2.outputs.iid }}" \
-            --document-name "AWS-RunShellScript" \
-            --parameters commands='[
-              "docker rm -f demo-version-app || true",
-              "docker pull '"${{ secrets.DOCKERHUB_USERNAME }}"'/demo_version:${{ steps.manifest.outputs.sha_tag }}",
-              "docker run -d --name demo-version-app -e NODE_ENV=production -e SERVE_BUILD=true -e PORT=4000 -p 80:4000 --restart unless-stopped '"${{ secrets.DOCKERHUB_USERNAME }}"'/demo_version:${{ steps.manifest.outputs.sha_tag }}",
-              "docker ps"
-            ]'
-
-      - name: Smoke test (retry)
+      - name: API ping (retry until up)
+        shell: bash
         run: |
           set -e
           for i in {1..30}; do
-            curl -fsS http://${{ steps.ec2.outputs.ip }}/api/ping && break
-            sleep 2
+            curl -fsS http://${{ steps.ec2.outputs.ip }}/api/ping && break || sleep 2
           done
-          curl -fsS http://${{ steps.ec2.outputs.ip }}/ | head -n 1
+          curl -fsS http://${{ steps.ec2.outputs.ip }}/api/ping
+
+      - name: Static asset Content-Type sanity
+        shell: bash
+        run: |
+          set -e
+          ASSET=$(curl -fsS http://${{ steps.ec2.outputs.ip }}/ | grep -o '/static/js/[^"]\+\.js' | head -n 1 || true)
+          if [ -n "$ASSET" ]; then
+            echo "Checking $ASSET"
+            curl -fsSI "http://${{ steps.ec2.outputs.ip }}$ASSET" | grep -i '^Content-Type:'
+          else
+            echo "No JS asset found in landing page (ok, but skipping Content-Type check)"
+          fi
+
+      - name: Show version.json (if present)
+        shell: bash
+        continue-on-error: true
+        run: |
+          curl -fsS http://${{ steps.ec2.outputs.ip }}/version.json || true
