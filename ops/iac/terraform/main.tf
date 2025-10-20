@@ -1,3 +1,13 @@
+/* 
+- Uses the default VPC/subnets to launch one Amazon Linux 2023 EC2.
+- Attaches an Instance Profile with SSM permissions so we can deploy via AWS Systems Manager.
+- Opens HTTP (80) from the internet; SSH can be limited to my IP.
+- Boots the instance with user_data.sh to install Docker, pull the app image, and run it on port 4000 mapped to host 80.
+- Tags the instance Name=demo-version-app so the GitHub Actions job can target it by tag .
+- Also creates the S# bucket and lambda
+*/
+
+
 terraform {
   required_version = ">= 1.5.0"
   required_providers {
@@ -79,7 +89,7 @@ resource "aws_iam_instance_profile" "ssm" {
   role = aws_iam_role.ssm.name
 }
 
-# AL2023 AMI (keep)
+# AL2023 AMI 
 data "aws_ami" "al2023" {
   most_recent = true
   owners      = ["137112412989"]
@@ -170,7 +180,7 @@ resource "random_id" "s3_suffix" {
   byte_length = 2
 }
 
-# S3 bucket (private, safe defaults)
+# S3 bucket 
 resource "aws_s3_bucket" "artifacts" {
   bucket        = "${var.s3_bucket_prefix}-${random_id.s3_suffix.hex}"
   force_destroy = true
@@ -215,7 +225,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
 }
 
 
-#let the EC2 instance role write logs to s3://.../logs/*
+
 resource "aws_iam_role_policy" "ec2_s3_write" {
   role = aws_iam_role.ssm.name
   policy = jsonencode({

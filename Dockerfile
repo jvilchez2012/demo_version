@@ -1,3 +1,12 @@
+# DemoVersion – multi-stage build (Node 20 + Alpine)
+# - Stage 1: build frontend with dev deps (Create React App-based).
+# - Stage 2: runtime with only prod deps + /server (Express) + /build (static).
+# - ENV SERVE_BUILD=true lets the API serve the built React app.
+# - Exposes container port 4000; infra maps host:80->container:4000 on EC2.
+
+
+
+
 # -------- build stage --------
 FROM node:20-alpine AS build
 WORKDIR /app

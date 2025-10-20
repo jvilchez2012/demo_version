@@ -1,3 +1,17 @@
+# CI/CD for DemoVersion
+# Pipeline flow (jobs):
+# 1) manifest   : derive image tag sha-<12>
+# 2) build_push : build multi-arch image, push :sha-<12> and :latest
+# 3) deploy     : target EC2 by tag via SSM (no hardcoded instance IDs)
+# 4) verify     : resolve public IP, curl /api/ping, sanity-check static asset
+
+# Rollback (To-Do):
+# - Redeploy a previous :sha-<old> tag by re-running the deploy job with APP_TAG override,
+#   or retag :latest to an older digest and re-run deploy.
+
+
+
+
 name: CI/CD - demo_version
 
 on:

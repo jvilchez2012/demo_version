@@ -1,7 +1,7 @@
 const app = require('./app');
 const connectDatabase = require('./config/database');
 const cloudinary = require('cloudinary');
-const PORT = process.env.PORT || 3099;
+const PORT = process.env.PORT || 4000; //Worng port
 
 // UncaughtException Error
 process.on('uncaughtException', (err) => {

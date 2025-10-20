@@ -1,4 +1,14 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# DemoVersion – EC2 bootstrap
+# - Installs Docker + Compose v2 plugin
+# - (Optionally) installs SSM agent on AL2023
+# - Pulls ${IMAGE_REPO}:${IMAGE_TAG} and runs container as demo-version-app
+# - Exposes container 4000 on host port 80 
+# - SERVE_BUILD=true tells the Node API to serve the React build from /build
+
+# Inputs provided by Terraform templatefile():
+#   IMAGE_REPO, IMAGE_TAG, HTTP_PORT (80), APP_PORT (4000), NAME
+
 set -euxo pipefail
 # log everything so you can debug later
 exec > >(tee -a /var/log/user-data.log) 2>&1
